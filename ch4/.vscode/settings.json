@@ -1,0 +1,21 @@
+{
+    "github.copilot.enable": {
+        "*": true,
+        "yaml": true,
+        "dockerfile": true,
+        "terraform": true,
+        "go": true
+    },
+    "github.copilot.advanced": {
+        "length": 500,
+        "temperature": 0.1,
+        "top_p": 1
+    },
+    "go.toolsManagement.checkForUpdates": "local",
+    "go.useLanguageServer": true,
+    "go.formatTool": "goimports",
+    "go.lintTool": "golangci-lint",
+    "go.vetOnSave": "package",
+    "go.coverOnSave": true,
+    "go.testTimeout": "30s"
+}
