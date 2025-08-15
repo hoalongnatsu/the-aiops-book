@@ -164,6 +164,15 @@ func (c *Client) CreateEC2Instance(ctx context.Context, params CreateInstancePar
 
 	if params.SubnetID != "" {
 		input.SubnetId = &params.SubnetID
+	} else {
+		// If no subnet is specified, try to find a default subnet
+		defaultSubnetID, err := c.findDefaultSubnet(ctx)
+		if err != nil {
+			c.logger.WithError(err).Warn("No default subnet found, instance will be created without VPC specification")
+		} else {
+			input.SubnetId = &defaultSubnetID
+			c.logger.WithField("subnetId", defaultSubnetID).Info("Using default subnet")
+		}
 	}
 
 	result, err := c.ec2.RunInstances(ctx, input)
@@ -264,4 +273,81 @@ func (c *Client) tagInstance(ctx context.Context, instanceID string, tags map[st
 
 	_, err := c.ec2.CreateTags(ctx, input)
 	return err
+}
+
+// findDefaultSubnet finds a default subnet in the default VPC or any available subnet
+func (c *Client) findDefaultSubnet(ctx context.Context) (string, error) {
+	// First, try to find the default VPC
+	vpcResult, err := c.ec2.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("is-default"),
+				Values: []string{"true"},
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to describe VPCs: %w", err)
+	}
+
+	var vpcID string
+	if len(vpcResult.Vpcs) > 0 {
+		// Found default VPC
+		vpcID = *vpcResult.Vpcs[0].VpcId
+		c.logger.WithField("vpcId", vpcID).Info("Found default VPC")
+	} else {
+		// No default VPC, find any available VPC
+		allVpcsResult, err := c.ec2.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{})
+		if err != nil {
+			return "", fmt.Errorf("failed to describe all VPCs: %w", err)
+		}
+		if len(allVpcsResult.Vpcs) == 0 {
+			return "", fmt.Errorf("no VPCs found in region")
+		}
+		vpcID = *allVpcsResult.Vpcs[0].VpcId
+		c.logger.WithField("vpcId", vpcID).Info("Using first available VPC (no default VPC found)")
+	}
+
+	// Find a subnet in the selected VPC
+	subnetResult, err := c.ec2.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("vpc-id"),
+				Values: []string{vpcID},
+			},
+			{
+				Name:   aws.String("state"),
+				Values: []string{"available"},
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to describe subnets: %w", err)
+	}
+
+	if len(subnetResult.Subnets) == 0 {
+		return "", fmt.Errorf("no available subnets found in VPC %s", vpcID)
+	}
+
+	// Prefer public subnets for instances (subnets with route to internet gateway)
+	for _, subnet := range subnetResult.Subnets {
+		if subnet.MapPublicIpOnLaunch != nil && *subnet.MapPublicIpOnLaunch {
+			c.logger.WithFields(logrus.Fields{
+				"subnetId": *subnet.SubnetId,
+				"vpcId":    vpcID,
+				"az":       *subnet.AvailabilityZone,
+			}).Info("Found public subnet")
+			return *subnet.SubnetId, nil
+		}
+	}
+
+	// If no public subnet found, use the first available subnet
+	firstSubnet := subnetResult.Subnets[0]
+	c.logger.WithFields(logrus.Fields{
+		"subnetId": *firstSubnet.SubnetId,
+		"vpcId":    vpcID,
+		"az":       *firstSubnet.AvailabilityZone,
+	}).Info("Using first available subnet")
+
+	return *firstSubnet.SubnetId, nil
 }
