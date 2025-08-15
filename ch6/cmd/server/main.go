@@ -41,7 +41,7 @@ func main() {
 	logger.Info("AWS connectivity verified")
 
 	// Create our MCP server wrapper (resources are registered automatically)
-	mcpServer := mcp.NewServer(cfg, awsClient, logger.Logger)
+	mcpServer := mcp.NewServer(cfg, awsClient, logger)
 
 	logger.WithField("server_name", cfg.MCP.ServerName).
 		WithField("version", cfg.MCP.Version).

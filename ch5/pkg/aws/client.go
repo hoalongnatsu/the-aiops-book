@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
+	"aws-mcp-server/internal/logging"
 	"aws-mcp-server/pkg/types"
 
 	"github.com/sirupsen/logrus"
@@ -18,10 +19,10 @@ import (
 type Client struct {
 	cfg    aws.Config
 	ec2    *ec2.Client
-	logger *logrus.Logger
+	logger *logging.Logger
 }
 
-func NewClient(region, profile string, logger *logrus.Logger) (*Client, error) {
+func NewClient(region, profile string, logger *logging.Logger) (*Client, error) {
 	cfg, err := config.LoadDefaultConfig(
 		context.Background(),
 	)
