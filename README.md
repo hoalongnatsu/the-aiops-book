@@ -50,89 +50,64 @@ Master AI-powered infrastructure automation with this hands-on guide to building
 
 #### Chapter 7: Advanced AWS Operations
 - EC2 instance management and automation
-- Auto Scaling Groups and Load Balancers
+- Auto Scaling Groups
+- AWS Load Balancers
 - VPC and networking automation
-- S3 and storage services integration
+- AWS Relational Database Service
 
-#### Chapter 8: Production-Ready MCP Architecture
-- Error handling and resilience patterns
-- Authentication and authorization
-- Performance optimization and caching
-- Observability and debugging
-
-#### Chapter 9: Using Your MCP Server with AI Assistants
+#### Chapter 8: Using Your MCP Server with AI Assistants
 - Connecting MCP servers to GitHub Copilot
-- Real-world usage patterns and workflows
 - Debugging and troubleshooting MCP connections
-- Optimizing AI interactions with your infrastructure
+- Real-world example of a three-tier web application
 
 ### Part III: AI Agents for DevOps
-**Intelligent Automation**
+**Intelligent Automation with State Management**
 
-#### Chapter 10: Introduction to AI Agents
-- Agent frameworks and architectures
-- LangChain for DevOps automation
-- Tool integration patterns
-- Agent reasoning and planning
+#### Chapter 9: Production-Ready AI Agents Architecture
+- Moving beyond simple MCP integrations
+- AI Agent frameworks: LangChain, LangGraph, and AutoGen
+- State management patterns for infrastructure automation
+- Agent reasoning, planning, and error recovery
+- Enterprise governance and approval workflows
 
-#### Chapter 11: Building DevOps AI Agents
-- Code analysis and quality agents
-- Infrastructure generation agents
-- CI/CD pipeline automation
-- Incident response and troubleshooting
+#### Chapter 10: State-Aware Infrastructure AI Agents
+- Terraform-like state management for AI agents
+- JSON state files: tracking deployed resources and status
+- Pre-deployment discovery and infrastructure scanning
+- Incremental updates and change detection
+- Resource dependency graph management
+- Conflict resolution and resource naming strategies
 
-#### Chapter 12: Multi-Agent Systems
-- Agent orchestration patterns
-- Crew AI and AutoGen integration
-- Complex workflow automation
-- Agent communication and coordination
+#### Chapter 11: Advanced Error Handling and Recovery
+- Circuit breakers and retry logic for AI agents
+- Graceful degradation patterns
+- Rollback capabilities and deployment history
+- Network interruption and AI model failure recovery
+- Audit trails and compliance logging
+- Multi-region failover strategies
 
-#### Chapter 13: Advanced Agent Patterns
-- RAG (Retrieval-Augmented Generation) for DevOps
-- Custom model integration
-- Real-time decision making
-- Feedback loops and continuous learning
+#### Chapter 12: AI Agent Orchestration Patterns
+- Multi-agent systems for complex deployments
+- Agent coordination and communication protocols
+- Workflow engines and pipeline automation
+- Event-driven architecture for infrastructure changes
+- Real-time monitoring and agent health checks
+- Performance optimization and caching strategies
 
-## Part IV: Complete AI Automation Workflows
+#### Chapter 13: Enterprise AI Agent Security
+- Secrets management and encrypted communication
+- Role-based access control (RBAC) for AI agents
+- Multi-tenant support and isolation
+- Compliance frameworks (SOC 2, FedRAMP, GDPR)
+- Security hardening and threat mitigation
+- Audit and governance for AI-driven changes
 
-#### Chapter 14: Combining MCP Servers and AI Agents
-- Integrating MCP servers with AI agent frameworks
-- Building end-to-end automation workflows
-- Agent-to-MCP communication patterns
-- Coordinating multiple agents with shared MCP resources
-- Error handling and recovery in complex workflows
-- Real-world integration examples
+## Part V: What's Next
 
-#### Chapter 15: Full-Stack Infrastructure Automation
-- Complete environment provisioning workflows
-- From code commit to production deployment
-- AI-powered CI/CD pipeline integration
-- Automated testing and validation
-- Rollback and disaster recovery automation
-- Performance monitoring and optimization
-
-#### Chapter 16: Production Implementation and Governance
-- Deploying AI automation systems safely
-- Security frameworks and access controls
-- Audit trails and compliance monitoring
-- Change management with AI systems
-- Team collaboration and approval workflows
-- Risk management and incident response
-
-#### Chapter 17: VS Code and Developer Experience
-- Custom MCP client development for VS Code
-- IDE workflow optimization
-- GitHub Copilot integration patterns
-- Developer productivity enhancement
-- Collaborative AI development workflows
-- Team onboarding and training
-
-## Part V: Future of AIOps
-
+#### Chapter 14: Future of AIOps
 - Emerging technologies and trends
 - The evolution of AI models and capabilities
 - New integration patterns and protocols
 - Research directions and opportunities
 - Building AIOps communities
 - Contributing to open source
-- Career transformation: From DevOps Engineer to AI Infrastructure Architect
