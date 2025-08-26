@@ -1,0 +1,10 @@
+{
+  "mcp.enabled": true,
+  "chat.mcp.serverSampling": {
+    "ch7/.vscode/mcp.json: aws-mcp-server": {
+      "allowedModels": [
+        "copilot/claude-sonnet-4"
+      ]
+    }
+  }
+}
