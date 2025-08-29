@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1><i class="fas fa-brain"></i> AI Infrastructure Agent</h1>
+            <div class="status">
+                <span class="timestamp">{{.Time}}</span>
+                <span class="connection-status" id="connectionStatus">
+                    <i class="fas fa-circle text-success"></i> Connected
+                </span>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <!-- Navigation Tabs -->
+            <div class="tabs">
+                <button class="tab-button active" onclick="openTab(event, 'agent-tab')">
+                    <i class="fas fa-robot"></i> AI Agent
+                </button>
+                <button class="tab-button" onclick="openTab(event, 'state-tab')">
+                    <i class="fas fa-database"></i> Infrastructure State
+                </button>
+                <button class="tab-button" onclick="openTab(event, 'graph-tab')">
+                    <i class="fas fa-project-diagram"></i> Dependency Graph
+                </button>
+                <button class="tab-button" onclick="openTab(event, 'conflicts-tab')">
+                    <i class="fas fa-exclamation-triangle"></i> Conflicts
+                </button>
+                <button class="tab-button" onclick="openTab(event, 'plan-tab')">
+                    <i class="fas fa-tasks"></i> Deployment Plan
+                </button>
+            </div>
+
+            <!-- AI Agent Tab -->
+            <div id="agent-tab" class="tab-content active">
+                <div class="panel">
+                    <h2>AI Infrastructure Agent</h2>
+                    <p>Describe what you want to do with your infrastructure in natural language.</p>
+                    
+                    <div class="agent-input">
+                        <textarea id="agentRequest" placeholder="Example: Create a new VPC with 2 subnets and an auto-scaling group with 3 EC2 instances running nginx"></textarea>
+                        <div class="input-controls">
+                            <label>
+                                <input type="checkbox" id="dryRun" checked> Dry Run Mode
+                            </label>
+                            <button class="btn btn-primary" onclick="processAgentRequest()">
+                                <i class="fas fa-paper-plane"></i> Process Request
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="agentResponse" class="response-area" style="display: none;">
+                        <h3>AI Response</h3>
+                        <div id="agentResult"></div>
+                        
+                        <!-- Execution Plan Display -->
+                        <div id="executionPlan" class="execution-plan" style="display: none;">
+                            <h3>Execution Plan</h3>
+                            <div id="planSteps"></div>
+                            <div class="plan-actions">
+                                <button class="btn btn-success" id="confirmPlanBtn" onclick="confirmAndExecutePlan()" style="display: none;">
+                                    <i class="fas fa-check"></i> Confirm & Execute Plan
+                                </button>
+                                <button class="btn btn-secondary" onclick="cancelPlan()">
+                                    <i class="fas fa-times"></i> Cancel
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Execution Progress Display -->
+                        <div id="executionProgress" class="execution-progress" style="display: none;">
+                            <h3>Execution Progress</h3>
+                            <div class="progress-header">
+                                <span id="executionStatus">Starting execution...</span>
+                                <span id="executionTimer">00:00</span>
+                            </div>
+                            <div class="progress-bar">
+                                <div id="progressFill" class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div id="executionLogs" class="execution-logs"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Infrastructure State Tab -->
+            <div id="state-tab" class="tab-content">
+                <div class="panel">
+                    <h2>Infrastructure State</h2>
+                    <div class="controls">
+                        <button class="btn btn-secondary" onclick="loadState()">
+                            <i class="fas fa-sync-alt"></i> Refresh State
+                        </button>
+                        <button class="btn btn-secondary" onclick="discoverInfrastructure()">
+                            <i class="fas fa-search"></i> Discover Live Infrastructure
+                        </button>
+                        <button class="btn btn-secondary" onclick="exportState()">
+                            <i class="fas fa-download"></i> Export State
+                        </button>
+                    </div>
+                    <div id="stateContent" class="content-area">
+                        <div class="loading">Loading state...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dependency Graph Tab -->
+            <div id="graph-tab" class="tab-content">
+                <div class="panel">
+                    <h2>Resource Dependency Graph</h2>
+                    <div class="controls">
+                        <select id="graphFormat">
+                            <option value="text">Text Format</option>
+                            <option value="mermaid">Mermaid Diagram</option>
+                        </select>
+                        <button class="btn btn-secondary" onclick="loadGraph()">
+                            <i class="fas fa-project-diagram"></i> Generate Graph
+                        </button>
+                    </div>
+                    <div id="graphContent" class="content-area">
+                        <div class="placeholder">Click "Generate Graph" to visualize dependencies</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Conflicts Tab -->
+            <div id="conflicts-tab" class="tab-content">
+                <div class="panel">
+                    <h2>Resource Conflicts</h2>
+                    <div class="controls">
+                        <label>
+                            <input type="checkbox" id="autoResolve"> Auto-resolve conflicts where possible
+                        </label>
+                        <button class="btn btn-secondary" onclick="loadConflicts()">
+                            <i class="fas fa-search"></i> Detect Conflicts
+                        </button>
+                    </div>
+                    <div id="conflictsContent" class="content-area">
+                        <div class="placeholder">Click "Detect Conflicts" to analyze resource conflicts</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Deployment Plan Tab -->
+            <div id="plan-tab" class="tab-content">
+                <div class="panel">
+                    <h2>Deployment Planning</h2>
+                    <div class="controls">
+                        <label>
+                            <input type="checkbox" id="includeLevels" checked> Include deployment levels
+                        </label>
+                        <button class="btn btn-secondary" onclick="generatePlan()">
+                            <i class="fas fa-calendar-alt"></i> Generate Plan
+                        </button>
+                    </div>
+                    <div id="planContent" class="content-area">
+                        <div class="placeholder">Click "Generate Plan" to create deployment strategy</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <div id="statusMessage">Ready</div>
+            <div class="loader" id="loader" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- Mermaid.js for diagram rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

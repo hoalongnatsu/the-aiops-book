@@ -10,21 +10,37 @@ import (
 	"aws-mcp-server/internal/config"
 	"aws-mcp-server/internal/logging"
 	"aws-mcp-server/pkg/aws"
+	"aws-mcp-server/pkg/conflict"
+	"aws-mcp-server/pkg/discovery"
+	"aws-mcp-server/pkg/graph"
+	"aws-mcp-server/pkg/state"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
 type Server struct {
-	config          *config.Config
-	awsClient       *aws.Client
+	Config           *config.Config
+	AWSClient        *aws.Client
+	Logger           *logging.Logger
+	StateManager     *state.Manager
+	DiscoveryScanner *discovery.Scanner
+	GraphManager     *graph.Manager
+	GraphAnalyzer    *graph.Analyzer
+	ConflictResolver *conflict.Resolver
+
 	resourceHandler *ResourceHandler
 	toolHandler     *ToolHandler
-	logger          *logging.Logger
 	mcpServer       *server.MCPServer
 }
 
 func NewServer(cfg *config.Config, awsClient *aws.Client, logger *logging.Logger) *Server {
+	// Initialize individual components
+	stateManager := state.NewManager(cfg.State.FilePath, cfg.AWS.Region, logger)
+	discoveryScanner := discovery.NewScanner(awsClient, logger)
+	graphManager := graph.NewManager(logger)
+	graphAnalyzer := graph.NewAnalyzer(graphManager)
+	conflictResolver := conflict.NewResolver(logger)
 
 	// Create MCP server
 	mcpServer := server.NewMCPServer(
@@ -35,12 +51,17 @@ func NewServer(cfg *config.Config, awsClient *aws.Client, logger *logging.Logger
 	)
 
 	s := &Server{
-		config:          cfg,
-		awsClient:       awsClient,
-		resourceHandler: NewResourceHandler(awsClient),
-		toolHandler:     NewToolHandler(awsClient, logger),
-		logger:          logger,
-		mcpServer:       mcpServer,
+		Config:           cfg,
+		AWSClient:        awsClient,
+		Logger:           logger,
+		StateManager:     stateManager,
+		DiscoveryScanner: discoveryScanner,
+		GraphManager:     graphManager,
+		GraphAnalyzer:    graphAnalyzer,
+		ConflictResolver: conflictResolver,
+		resourceHandler:  NewResourceHandler(awsClient),
+		toolHandler:      NewToolHandler(awsClient, logger),
+		mcpServer:        mcpServer,
 	}
 
 	// Register resources
@@ -48,6 +69,15 @@ func NewServer(cfg *config.Config, awsClient *aws.Client, logger *logging.Logger
 
 	// Register tools
 	s.registerTools()
+
+	// Register state-aware tools
+	s.registerStateAwareTools()
+
+	// Load existing state from file
+	if err := s.StateManager.LoadState(context.Background()); err != nil {
+		logger.WithError(err).Error("Failed to load infrastructure state, continuing with empty state")
+		// Don't fail initialization, just log the error and continue with empty state
+	}
 
 	return s
 }
@@ -61,12 +91,12 @@ func (s *Server) registerResources() {
 			mcp.WithMIMEType("application/json"),
 		),
 		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			s.logger.Info("Received request for EC2 instances list")
+			s.Logger.Info("Received request for EC2 instances list")
 
 			// Use our resource handler to get the instances
 			result, err := s.resourceHandler.ReadResource(ctx, "aws://ec2/instances")
 			if err != nil {
-				s.logger.WithError(err).Error("Failed to read EC2 instances resource")
+				s.Logger.WithError(err).Error("Failed to read EC2 instances resource")
 				return nil, err
 			}
 
@@ -83,12 +113,12 @@ func (s *Server) registerResources() {
 	)
 
 	s.mcpServer.AddResourceTemplate(template, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		s.logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific EC2 instance")
+		s.Logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific EC2 instance")
 
 		// The server automatically matches URIs to templates, so we can use the full URI directly
 		result, err := s.resourceHandler.ReadResource(ctx, request.Params.URI)
 		if err != nil {
-			s.logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read resource")
+			s.Logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read resource")
 			return nil, err
 		}
 
@@ -102,11 +132,11 @@ func (s *Server) registerResources() {
 			mcp.WithMIMEType("application/json"),
 		),
 		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			s.logger.Info("Received request for VPCs list")
+			s.Logger.Info("Received request for VPCs list")
 
 			result, err := s.resourceHandler.ReadResource(ctx, "aws://vpc/vpcs")
 			if err != nil {
-				s.logger.WithError(err).Error("Failed to read VPCs resource")
+				s.Logger.WithError(err).Error("Failed to read VPCs resource")
 				return nil, err
 			}
 
@@ -123,11 +153,11 @@ func (s *Server) registerResources() {
 	)
 
 	s.mcpServer.AddResourceTemplate(vpcTemplate, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		s.logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific VPC")
+		s.Logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific VPC")
 
 		result, err := s.resourceHandler.ReadResource(ctx, request.Params.URI)
 		if err != nil {
-			s.logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read VPC resource")
+			s.Logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read VPC resource")
 			return nil, err
 		}
 
@@ -141,11 +171,11 @@ func (s *Server) registerResources() {
 			mcp.WithMIMEType("application/json"),
 		),
 		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			s.logger.Info("Received request for subnets list")
+			s.Logger.Info("Received request for subnets list")
 
 			result, err := s.resourceHandler.ReadResource(ctx, "aws://vpc/subnets")
 			if err != nil {
-				s.logger.WithError(err).Error("Failed to read subnets resource")
+				s.Logger.WithError(err).Error("Failed to read subnets resource")
 				return nil, err
 			}
 
@@ -162,11 +192,11 @@ func (s *Server) registerResources() {
 	)
 
 	s.mcpServer.AddResourceTemplate(subnetTemplate, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		s.logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific subnet")
+		s.Logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific subnet")
 
 		result, err := s.resourceHandler.ReadResource(ctx, request.Params.URI)
 		if err != nil {
-			s.logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read subnet resource")
+			s.Logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read subnet resource")
 			return nil, err
 		}
 
@@ -180,11 +210,11 @@ func (s *Server) registerResources() {
 			mcp.WithMIMEType("application/json"),
 		),
 		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			s.logger.Info("Received request for Auto Scaling Groups list")
+			s.Logger.Info("Received request for Auto Scaling Groups list")
 
 			result, err := s.resourceHandler.ReadResource(ctx, "aws://autoscaling/groups")
 			if err != nil {
-				s.logger.WithError(err).Error("Failed to read Auto Scaling Groups resource")
+				s.Logger.WithError(err).Error("Failed to read Auto Scaling Groups resource")
 				return nil, err
 			}
 
@@ -201,11 +231,11 @@ func (s *Server) registerResources() {
 	)
 
 	s.mcpServer.AddResourceTemplate(asgTemplate, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		s.logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific Auto Scaling Group")
+		s.Logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific Auto Scaling Group")
 
 		result, err := s.resourceHandler.ReadResource(ctx, request.Params.URI)
 		if err != nil {
-			s.logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read Auto Scaling Group resource")
+			s.Logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read Auto Scaling Group resource")
 			return nil, err
 		}
 
@@ -219,11 +249,11 @@ func (s *Server) registerResources() {
 			mcp.WithMIMEType("application/json"),
 		),
 		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			s.logger.Info("Received request for Load Balancers list")
+			s.Logger.Info("Received request for Load Balancers list")
 
 			result, err := s.resourceHandler.ReadResource(ctx, "aws://elbv2/loadbalancers")
 			if err != nil {
-				s.logger.WithError(err).Error("Failed to read Load Balancers resource")
+				s.Logger.WithError(err).Error("Failed to read Load Balancers resource")
 				return nil, err
 			}
 
@@ -240,11 +270,11 @@ func (s *Server) registerResources() {
 	)
 
 	s.mcpServer.AddResourceTemplate(albTemplate, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		s.logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific Load Balancer")
+		s.Logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific Load Balancer")
 
 		result, err := s.resourceHandler.ReadResource(ctx, request.Params.URI)
 		if err != nil {
-			s.logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read Load Balancer resource")
+			s.Logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read Load Balancer resource")
 			return nil, err
 		}
 
@@ -258,11 +288,11 @@ func (s *Server) registerResources() {
 			mcp.WithMIMEType("application/json"),
 		),
 		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			s.logger.Info("Received request for Target Groups list")
+			s.Logger.Info("Received request for Target Groups list")
 
 			result, err := s.resourceHandler.ReadResource(ctx, "aws://elbv2/targetgroups")
 			if err != nil {
-				s.logger.WithError(err).Error("Failed to read Target Groups resource")
+				s.Logger.WithError(err).Error("Failed to read Target Groups resource")
 				return nil, err
 			}
 
@@ -279,11 +309,11 @@ func (s *Server) registerResources() {
 	)
 
 	s.mcpServer.AddResourceTemplate(tgTemplate, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		s.logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific Target Group")
+		s.Logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific Target Group")
 
 		result, err := s.resourceHandler.ReadResource(ctx, request.Params.URI)
 		if err != nil {
-			s.logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read Target Group resource")
+			s.Logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read Target Group resource")
 			return nil, err
 		}
 
@@ -297,11 +327,11 @@ func (s *Server) registerResources() {
 			mcp.WithMIMEType("application/json"),
 		),
 		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			s.logger.Info("Received request for Launch Templates list")
+			s.Logger.Info("Received request for Launch Templates list")
 
 			result, err := s.resourceHandler.ReadResource(ctx, "aws://ec2/launchtemplates")
 			if err != nil {
-				s.logger.WithError(err).Error("Failed to read Launch Templates resource")
+				s.Logger.WithError(err).Error("Failed to read Launch Templates resource")
 				return nil, err
 			}
 
@@ -318,11 +348,11 @@ func (s *Server) registerResources() {
 	)
 
 	s.mcpServer.AddResourceTemplate(ltTemplate, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		s.logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific Launch Template")
+		s.Logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific Launch Template")
 
 		result, err := s.resourceHandler.ReadResource(ctx, request.Params.URI)
 		if err != nil {
-			s.logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read Launch Template resource")
+			s.Logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read Launch Template resource")
 			return nil, err
 		}
 
@@ -336,11 +366,11 @@ func (s *Server) registerResources() {
 			mcp.WithMIMEType("application/json"),
 		),
 		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			s.logger.Info("Received request for AMIs list")
+			s.Logger.Info("Received request for AMIs list")
 
 			result, err := s.resourceHandler.ReadResource(ctx, "aws://ec2/images")
 			if err != nil {
-				s.logger.WithError(err).Error("Failed to read AMIs resource")
+				s.Logger.WithError(err).Error("Failed to read AMIs resource")
 				return nil, err
 			}
 
@@ -357,11 +387,11 @@ func (s *Server) registerResources() {
 	)
 
 	s.mcpServer.AddResourceTemplate(amiTemplate, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		s.logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific AMI")
+		s.Logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific AMI")
 
 		result, err := s.resourceHandler.ReadResource(ctx, request.Params.URI)
 		if err != nil {
-			s.logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read AMI resource")
+			s.Logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read AMI resource")
 			return nil, err
 		}
 
@@ -377,11 +407,11 @@ func (s *Server) registerResources() {
 			mcp.WithMIMEType("application/json"),
 		),
 		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			s.logger.Info("Received request for RDS instances list")
+			s.Logger.Info("Received request for RDS instances list")
 
 			result, err := s.resourceHandler.ReadResource(ctx, "aws://rds/instances")
 			if err != nil {
-				s.logger.WithError(err).Error("Failed to read RDS instances resource")
+				s.Logger.WithError(err).Error("Failed to read RDS instances resource")
 				return nil, err
 			}
 
@@ -398,11 +428,11 @@ func (s *Server) registerResources() {
 	)
 
 	s.mcpServer.AddResourceTemplate(rdsTemplate, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		s.logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific RDS instance")
+		s.Logger.WithField("uri", request.Params.URI).Info("Received read resource request for specific RDS instance")
 
 		result, err := s.resourceHandler.ReadResource(ctx, request.Params.URI)
 		if err != nil {
-			s.logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read RDS instance resource")
+			s.Logger.WithError(err).WithField("uri", request.Params.URI).Error("Failed to read RDS instance resource")
 			return nil, err
 		}
 
@@ -416,11 +446,11 @@ func (s *Server) registerResources() {
 			mcp.WithMIMEType("application/json"),
 		),
 		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			s.logger.Info("Received request for RDS snapshots list")
+			s.Logger.Info("Received request for RDS snapshots list")
 
 			result, err := s.resourceHandler.ReadResource(ctx, "aws://rds/snapshots")
 			if err != nil {
-				s.logger.WithError(err).Error("Failed to read RDS snapshots resource")
+				s.Logger.WithError(err).Error("Failed to read RDS snapshots resource")
 				return nil, err
 			}
 
@@ -1128,13 +1158,13 @@ func (s *Server) registerTools() {
 
 // Start begins the stdio message loop for the MCP server
 func (s *Server) Start(ctx context.Context) error {
-	s.logger.Info("Starting MCP server message loop on stdio...")
+	s.Logger.Info("Starting MCP server message loop on stdio...")
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			s.logger.Info("Shutdown signal received, stopping server")
+			s.Logger.Info("Shutdown signal received, stopping server")
 			return ctx.Err()
 		default:
 			line := scanner.Bytes()
@@ -1149,7 +1179,7 @@ func (s *Server) Start(ctx context.Context) error {
 			if response != nil {
 				responseBytes, err := json.Marshal(response)
 				if err != nil {
-					s.logger.WithError(err).Error("Failed to marshal response")
+					s.Logger.WithError(err).Error("Failed to marshal response")
 					continue
 				}
 
@@ -1160,7 +1190,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	if err := scanner.Err(); err != nil {
-		s.logger.WithError(err).Error("Error reading from stdin")
+		s.Logger.WithError(err).Error("Error reading from stdin")
 		return err
 	}
 

@@ -501,3 +501,62 @@ func (c *Client) convertAMI(image ec2types.Image) *types.AWSResource {
 		LastSeen: time.Now(),
 	}
 }
+
+// GetLatestAmazonLinux2AMI finds the latest Amazon Linux 2 AMI in the current region
+func (c *Client) GetLatestAmazonLinux2AMI(ctx context.Context) (string, error) {
+	input := &ec2.DescribeImagesInput{
+		Owners: []string{"amazon"},
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("name"),
+				Values: []string{"amzn2-ami-hvm-*-x86_64-gp2"},
+			},
+			{
+				Name:   aws.String("state"),
+				Values: []string{"available"},
+			},
+		},
+	}
+
+	result, err := c.ec2.DescribeImages(ctx, input)
+	if err != nil {
+		return "", fmt.Errorf("failed to describe AMIs: %w", err)
+	}
+
+	if len(result.Images) == 0 {
+		return "", fmt.Errorf("no Amazon Linux 2 AMIs found")
+	}
+
+	// Find the most recent AMI by creation date
+	var latestAMI ec2types.Image
+	var latestTime time.Time
+
+	for _, image := range result.Images {
+		if image.CreationDate == nil {
+			continue
+		}
+
+		creationTime, err := time.Parse(time.RFC3339, *image.CreationDate)
+		if err != nil {
+			c.logger.WithError(err).WithField("ami", *image.ImageId).Warn("Failed to parse AMI creation date")
+			continue
+		}
+
+		if creationTime.After(latestTime) {
+			latestTime = creationTime
+			latestAMI = image
+		}
+	}
+
+	if latestAMI.ImageId == nil {
+		return "", fmt.Errorf("no valid Amazon Linux 2 AMI found")
+	}
+
+	c.logger.WithFields(logrus.Fields{
+		"amiId":        *latestAMI.ImageId,
+		"name":         aws.ToString(latestAMI.Name),
+		"creationDate": aws.ToString(latestAMI.CreationDate),
+	}).Info("Found latest Amazon Linux 2 AMI")
+
+	return *latestAMI.ImageId, nil
+}
