@@ -18,6 +18,15 @@ import (
 
 // CreateEC2Instance creates a new EC2 instance
 func (c *Client) CreateEC2Instance(ctx context.Context, params CreateInstanceParams) (*types.AWSResource, error) {
+	c.logger.WithFields(logrus.Fields{
+		"imageId":         params.ImageID,
+		"instanceType":    params.InstanceType,
+		"keyName":         params.KeyName,
+		"securityGroupId": params.SecurityGroupID,
+		"subnetId":        params.SubnetID,
+		"name":            params.Name,
+	}).Info("CreateEC2Instance called with parameters")
+
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String(params.ImageID),
 		InstanceType: ec2types.InstanceType(params.InstanceType),
@@ -31,19 +40,12 @@ func (c *Client) CreateEC2Instance(ctx context.Context, params CreateInstancePar
 
 	if params.SecurityGroupID != "" {
 		input.SecurityGroupIds = []string{params.SecurityGroupID}
+		c.logger.WithField("securityGroupIds", input.SecurityGroupIds).Debug("Security group IDs set")
 	}
 
 	if params.SubnetID != "" {
-		input.SubnetId = &params.SubnetID
-	} else {
-		// If no subnet is specified, try to find a default subnet
-		defaultSubnetID, err := c.findDefaultSubnet(ctx)
-		if err != nil {
-			c.logger.WithError(err).Warn("No default subnet found, instance will be created without VPC specification")
-		} else {
-			input.SubnetId = &defaultSubnetID
-			c.logger.WithField("subnetId", defaultSubnetID).Info("Using default subnet")
-		}
+		input.SubnetId = aws.String(params.SubnetID)
+		c.logger.WithField("subnetId", params.SubnetID).Debug("Subnet ID set")
 	}
 
 	// Add tag specifications during creation if name is provided
@@ -157,8 +159,10 @@ func (c *Client) convertEC2Instance(instance ec2types.Instance) *types.AWSResour
 	}
 }
 
-// findDefaultSubnet finds a default subnet in the default VPC
+// findDefaultSubnet finds a default subnet in the default VPC with enhanced fallback logic
 func (c *Client) findDefaultSubnet(ctx context.Context) (string, error) {
+	c.logger.WithField("region", c.cfg.Region).Info("Starting search for default subnet")
+
 	// First, find the default VPC
 	vpcResult, err := c.ec2.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
 		Filters: []ec2types.Filter{
@@ -166,28 +170,58 @@ func (c *Client) findDefaultSubnet(ctx context.Context) (string, error) {
 				Name:   aws.String("isDefault"),
 				Values: []string{"true"},
 			},
+			{
+				Name:   aws.String("state"),
+				Values: []string{"available"},
+			},
 		},
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to describe VPCs: %w", err)
 	}
 
-	if len(vpcResult.Vpcs) == 0 {
-		return "", fmt.Errorf("no default VPC found")
+	var vpcID string
+	if len(vpcResult.Vpcs) > 0 {
+		vpcID = *vpcResult.Vpcs[0].VpcId
+		c.logger.WithField("defaultVpcId", vpcID).Info("Found default VPC")
+	} else {
+		c.logger.Warn("No default VPC found, looking for any available VPC")
+
+		// Fallback: find any available VPC
+		fallbackVpcResult, err := c.ec2.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
+			Filters: []ec2types.Filter{
+				{
+					Name:   aws.String("state"),
+					Values: []string{"available"},
+				},
+			},
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to describe VPCs for fallback: %w", err)
+		}
+
+		if len(fallbackVpcResult.Vpcs) == 0 {
+			return "", fmt.Errorf("no VPCs found in region %s", c.cfg.Region)
+		}
+
+		vpcID = *fallbackVpcResult.Vpcs[0].VpcId
+		c.logger.WithField("fallbackVpcId", vpcID).Info("Using first available VPC as fallback")
 	}
 
-	defaultVpcID := *vpcResult.Vpcs[0].VpcId
-
-	// Find a subnet in the default VPC
+	// Find a subnet in the VPC - try default subnets first
 	subnetResult, err := c.ec2.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
 		Filters: []ec2types.Filter{
 			{
 				Name:   aws.String("vpc-id"),
-				Values: []string{defaultVpcID},
+				Values: []string{vpcID},
 			},
 			{
 				Name:   aws.String("default-for-az"),
 				Values: []string{"true"},
+			},
+			{
+				Name:   aws.String("state"),
+				Values: []string{"available"},
 			},
 		},
 	})
@@ -195,18 +229,54 @@ func (c *Client) findDefaultSubnet(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to describe subnets: %w", err)
 	}
 
-	if len(subnetResult.Subnets) == 0 {
-		return "", fmt.Errorf("no default subnet found in default VPC")
-	}
-
-	// Return the first available subnet
-	for _, subnet := range subnetResult.Subnets {
-		if subnet.State == ec2types.SubnetStateAvailable {
-			return *subnet.SubnetId, nil
+	// If we found default subnets, use the first available one
+	if len(subnetResult.Subnets) > 0 {
+		for _, subnet := range subnetResult.Subnets {
+			if subnet.State == ec2types.SubnetStateAvailable {
+				subnetID := *subnet.SubnetId
+				c.logger.WithFields(logrus.Fields{
+					"subnetId":  subnetID,
+					"vpcId":     vpcID,
+					"isDefault": true,
+				}).Info("Found default subnet")
+				return subnetID, nil
+			}
 		}
 	}
 
-	return "", fmt.Errorf("no available default subnet found")
+	// Fallback: find any available subnet in the VPC
+	c.logger.Warn("No default subnets found, looking for any available subnet in VPC")
+
+	allSubnetsResult, err := c.ec2.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("vpc-id"),
+				Values: []string{vpcID},
+			},
+			{
+				Name:   aws.String("state"),
+				Values: []string{"available"},
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to describe all subnets: %w", err)
+	}
+
+	if len(allSubnetsResult.Subnets) == 0 {
+		return "", fmt.Errorf("no available subnets found in VPC %s", vpcID)
+	}
+
+	// Return the first available subnet
+	subnetID := *allSubnetsResult.Subnets[0].SubnetId
+	c.logger.WithFields(logrus.Fields{
+		"subnetId":  subnetID,
+		"vpcId":     vpcID,
+		"isDefault": false,
+		"fallback":  true,
+	}).Info("Using first available subnet as fallback")
+
+	return subnetID, nil
 }
 
 // DescribeInstances lists EC2 instances
@@ -342,6 +412,8 @@ func (c *Client) WaitForAMI(ctx context.Context, amiID string) error {
 
 // GetAvailabilityZones retrieves all available availability zones in the current region
 func (c *Client) GetAvailabilityZones(ctx context.Context) ([]string, error) {
+	c.logger.WithField("region", c.cfg.Region).Info("Starting DescribeAvailabilityZones API call")
+
 	result, err := c.ec2.DescribeAvailabilityZones(ctx, &ec2.DescribeAvailabilityZonesInput{
 		Filters: []ec2types.Filter{
 			{
@@ -351,21 +423,35 @@ func (c *Client) GetAvailabilityZones(ctx context.Context) ([]string, error) {
 		},
 	})
 	if err != nil {
+		c.logger.WithError(err).Error("DescribeAvailabilityZones API call failed")
 		return nil, fmt.Errorf("failed to describe availability zones: %w", err)
 	}
+
+	c.logger.WithField("azs_count", len(result.AvailabilityZones)).Info("DescribeAvailabilityZones API call successful")
 
 	var zones []string
 	for _, az := range result.AvailabilityZones {
 		if az.ZoneName != nil {
 			zones = append(zones, *az.ZoneName)
+			c.logger.WithFields(logrus.Fields{
+				"az_name": *az.ZoneName,
+				"state":   az.State,
+			}).Debug("Found available AZ")
 		}
 	}
 
 	if len(zones) == 0 {
-		// Fallback to common zones for us-east-1 if none found
-		logrus.Warn("No availability zones found, using fallback zones")
-		return []string{"us-east-1a", "us-east-1b", "us-east-1c"}, nil
+		// Fallback to common zones for the current region if none found
+		c.logger.Warn("No availability zones found, using fallback zones")
+		fallbackZones := []string{c.cfg.Region + "a", c.cfg.Region + "b", c.cfg.Region + "c"}
+		return fallbackZones, nil
 	}
+
+	c.logger.WithFields(logrus.Fields{
+		"availability_zones": zones,
+		"region":             c.cfg.Region,
+		"count":              len(zones),
+	}).Info("Successfully found availability zones via AWS API")
 
 	return zones, nil
 }
@@ -504,6 +590,8 @@ func (c *Client) convertAMI(image ec2types.Image) *types.AWSResource {
 
 // GetLatestAmazonLinux2AMI finds the latest Amazon Linux 2 AMI in the current region
 func (c *Client) GetLatestAmazonLinux2AMI(ctx context.Context) (string, error) {
+	c.logger.WithField("region", c.cfg.Region).Info("Starting DescribeImages API call for latest Amazon Linux 2 AMI")
+
 	input := &ec2.DescribeImagesInput{
 		Owners: []string{"amazon"},
 		Filters: []ec2types.Filter{
@@ -518,13 +606,107 @@ func (c *Client) GetLatestAmazonLinux2AMI(ctx context.Context) (string, error) {
 		},
 	}
 
+	c.logger.WithFields(logrus.Fields{
+		"owners":  input.Owners,
+		"filters": input.Filters,
+	}).Debug("Making DescribeImages API call with parameters")
+
 	result, err := c.ec2.DescribeImages(ctx, input)
 	if err != nil {
+		c.logger.WithError(err).Error("DescribeImages API call failed")
 		return "", fmt.Errorf("failed to describe AMIs: %w", err)
 	}
 
+	c.logger.WithField("images_count", len(result.Images)).Info("DescribeImages API call successful")
+
 	if len(result.Images) == 0 {
+		c.logger.Error("No Amazon Linux 2 AMIs found in current region")
 		return "", fmt.Errorf("no Amazon Linux 2 AMIs found")
+	}
+
+	// Find the most recent AMI by creation date
+	var latestAMI ec2types.Image
+	var latestTime time.Time
+
+	c.logger.Debug("Processing AMI images to find latest")
+	for i, image := range result.Images {
+		if image.CreationDate == nil {
+			c.logger.WithField("ami_index", i).Warn("AMI has no creation date, skipping")
+			continue
+		}
+
+		creationTime, err := time.Parse(time.RFC3339, *image.CreationDate)
+		if err != nil {
+			c.logger.WithError(err).WithField("ami", *image.ImageId).Warn("Failed to parse AMI creation date")
+			continue
+		}
+
+		c.logger.WithFields(logrus.Fields{
+			"ami_id":        *image.ImageId,
+			"name":          aws.ToString(image.Name),
+			"creation_date": *image.CreationDate,
+		}).Debug("Processing AMI candidate")
+
+		if creationTime.After(latestTime) {
+			latestTime = creationTime
+			latestAMI = image
+			c.logger.WithField("new_latest_ami", *image.ImageId).Debug("Found newer AMI")
+		}
+	}
+
+	if latestAMI.ImageId == nil {
+		c.logger.Error("No valid Amazon Linux 2 AMI found after processing all images")
+		return "", fmt.Errorf("no valid Amazon Linux 2 AMI found")
+	}
+
+	c.logger.WithFields(logrus.Fields{
+		"amiId":        *latestAMI.ImageId,
+		"name":         aws.ToString(latestAMI.Name),
+		"creationDate": aws.ToString(latestAMI.CreationDate),
+		"region":       c.cfg.Region,
+	}).Info("Successfully found latest Amazon Linux 2 AMI via AWS API")
+
+	return *latestAMI.ImageId, nil
+}
+
+// GetLatestUbuntuAMI finds the latest Ubuntu LTS AMI in the current region
+func (c *Client) GetLatestUbuntuAMI(ctx context.Context, architecture string) (string, error) {
+	c.logger.WithFields(logrus.Fields{
+		"region":       c.cfg.Region,
+		"architecture": architecture,
+	}).Info("Starting DescribeImages API call for latest Ubuntu LTS AMI")
+
+	// Ubuntu AMI name pattern for LTS versions
+	namePattern := "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-" + architecture + "-server-*"
+	if architecture == "arm64" {
+		namePattern = "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-arm64-server-*"
+	}
+
+	input := &ec2.DescribeImagesInput{
+		Owners: []string{"099720109477"}, // Canonical's AWS account ID
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("name"),
+				Values: []string{namePattern},
+			},
+			{
+				Name:   aws.String("state"),
+				Values: []string{"available"},
+			},
+		},
+	}
+
+	result, err := c.ec2.DescribeImages(ctx, input)
+	if err != nil {
+		c.logger.WithError(err).Error("DescribeImages API call failed for Ubuntu AMI")
+		return "", fmt.Errorf("failed to describe Ubuntu AMIs: %w", err)
+	}
+
+	c.logger.WithField("images_count", len(result.Images)).Info("DescribeImages API call successful for Ubuntu")
+
+	if len(result.Images) == 0 {
+		c.logger.Error("No Ubuntu AMIs found in current region")
+		return "", fmt.Errorf("no Ubuntu AMIs found")
 	}
 
 	// Find the most recent AMI by creation date
@@ -538,7 +720,7 @@ func (c *Client) GetLatestAmazonLinux2AMI(ctx context.Context) (string, error) {
 
 		creationTime, err := time.Parse(time.RFC3339, *image.CreationDate)
 		if err != nil {
-			c.logger.WithError(err).WithField("ami", *image.ImageId).Warn("Failed to parse AMI creation date")
+			c.logger.WithError(err).WithField("ami", *image.ImageId).Warn("Failed to parse Ubuntu AMI creation date")
 			continue
 		}
 
@@ -549,14 +731,258 @@ func (c *Client) GetLatestAmazonLinux2AMI(ctx context.Context) (string, error) {
 	}
 
 	if latestAMI.ImageId == nil {
-		return "", fmt.Errorf("no valid Amazon Linux 2 AMI found")
+		return "", fmt.Errorf("no valid Ubuntu AMI found")
 	}
 
 	c.logger.WithFields(logrus.Fields{
 		"amiId":        *latestAMI.ImageId,
 		"name":         aws.ToString(latestAMI.Name),
 		"creationDate": aws.ToString(latestAMI.CreationDate),
-	}).Info("Found latest Amazon Linux 2 AMI")
+		"region":       c.cfg.Region,
+	}).Info("Successfully found latest Ubuntu LTS AMI via AWS API")
 
 	return *latestAMI.ImageId, nil
+}
+
+// GetLatestWindowsAMI finds the latest Windows Server AMI in the current region
+func (c *Client) GetLatestWindowsAMI(ctx context.Context, architecture string) (string, error) {
+	c.logger.WithFields(logrus.Fields{
+		"region":       c.cfg.Region,
+		"architecture": architecture,
+	}).Info("Starting DescribeImages API call for latest Windows Server AMI")
+
+	// Windows Server 2022 Base AMI pattern
+	namePattern := "Windows_Server-2022-English-Full-Base-*"
+
+	input := &ec2.DescribeImagesInput{
+		Owners: []string{"amazon"},
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("name"),
+				Values: []string{namePattern},
+			},
+			{
+				Name:   aws.String("state"),
+				Values: []string{"available"},
+			},
+			{
+				Name:   aws.String("architecture"),
+				Values: []string{architecture},
+			},
+		},
+	}
+
+	result, err := c.ec2.DescribeImages(ctx, input)
+	if err != nil {
+		c.logger.WithError(err).Error("DescribeImages API call failed for Windows AMI")
+		return "", fmt.Errorf("failed to describe Windows AMIs: %w", err)
+	}
+
+	c.logger.WithField("images_count", len(result.Images)).Info("DescribeImages API call successful for Windows")
+
+	if len(result.Images) == 0 {
+		c.logger.Error("No Windows Server AMIs found in current region")
+		return "", fmt.Errorf("no Windows Server AMIs found")
+	}
+
+	// Find the most recent AMI by creation date
+	var latestAMI ec2types.Image
+	var latestTime time.Time
+
+	for _, image := range result.Images {
+		if image.CreationDate == nil {
+			continue
+		}
+
+		creationTime, err := time.Parse(time.RFC3339, *image.CreationDate)
+		if err != nil {
+			c.logger.WithError(err).WithField("ami", *image.ImageId).Warn("Failed to parse Windows AMI creation date")
+			continue
+		}
+
+		if creationTime.After(latestTime) {
+			latestTime = creationTime
+			latestAMI = image
+		}
+	}
+
+	if latestAMI.ImageId == nil {
+		return "", fmt.Errorf("no valid Windows Server AMI found")
+	}
+
+	c.logger.WithFields(logrus.Fields{
+		"amiId":        *latestAMI.ImageId,
+		"name":         aws.ToString(latestAMI.Name),
+		"creationDate": aws.ToString(latestAMI.CreationDate),
+		"region":       c.cfg.Region,
+	}).Info("Successfully found latest Windows Server AMI via AWS API")
+
+	return *latestAMI.ImageId, nil
+}
+
+// GetDefaultVPC finds the default VPC in the current region, with fallback to first available VPC
+func (c *Client) GetDefaultVPC(ctx context.Context) (string, error) {
+	c.logger.WithField("region", c.cfg.Region).Info("Starting DescribeVpcs API call for default VPC")
+
+	// First try to find the default VPC
+	input := &ec2.DescribeVpcsInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("isDefault"),
+				Values: []string{"true"},
+			},
+			{
+				Name:   aws.String("state"),
+				Values: []string{"available"},
+			},
+		},
+	}
+
+	result, err := c.ec2.DescribeVpcs(ctx, input)
+	if err != nil {
+		c.logger.WithError(err).Error("DescribeVpcs API call failed")
+		return "", fmt.Errorf("failed to describe VPCs: %w", err)
+	}
+
+	c.logger.WithField("default_vpcs_count", len(result.Vpcs)).Info("DescribeVpcs API call successful for default VPC")
+
+	// If we found a default VPC, use it
+	if len(result.Vpcs) > 0 {
+		defaultVpcID := *result.Vpcs[0].VpcId
+		c.logger.WithFields(logrus.Fields{
+			"vpcId":     defaultVpcID,
+			"region":    c.cfg.Region,
+			"isDefault": true,
+		}).Info("Successfully found default VPC via AWS API")
+		return defaultVpcID, nil
+	}
+
+	// If no default VPC found, try to find any available VPC as fallback
+	c.logger.Warn("No default VPC found, searching for any available VPC as fallback")
+
+	fallbackInput := &ec2.DescribeVpcsInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("state"),
+				Values: []string{"available"},
+			},
+		},
+	}
+
+	fallbackResult, err := c.ec2.DescribeVpcs(ctx, fallbackInput)
+	if err != nil {
+		c.logger.WithError(err).Error("Fallback DescribeVpcs API call failed")
+		return "", fmt.Errorf("failed to describe VPCs for fallback: %w", err)
+	}
+
+	c.logger.WithField("available_vpcs_count", len(fallbackResult.Vpcs)).Info("Fallback DescribeVpcs API call successful")
+
+	if len(fallbackResult.Vpcs) == 0 {
+		c.logger.Error("No VPCs found in current region")
+		return "", fmt.Errorf("no VPCs found in region %s", c.cfg.Region)
+	}
+
+	// Use the first available VPC
+	fallbackVpcID := *fallbackResult.Vpcs[0].VpcId
+	c.logger.WithFields(logrus.Fields{
+		"vpcId":     fallbackVpcID,
+		"region":    c.cfg.Region,
+		"isDefault": false,
+		"fallback":  true,
+	}).Info("Using first available VPC as fallback")
+
+	return fallbackVpcID, nil
+}
+
+// GetDefaultSubnet finds a default subnet, with fallback logic similar to findDefaultSubnet
+func (c *Client) GetDefaultSubnet(ctx context.Context) (*SubnetInfo, error) {
+	c.logger.WithField("region", c.cfg.Region).Info("Starting API call to get default subnet")
+
+	// Use the existing findDefaultSubnet logic which already has robust fallback
+	subnetID, err := c.findDefaultSubnet(ctx)
+	if err != nil {
+		c.logger.WithError(err).Error("Failed to find default subnet via AWS API")
+		return nil, fmt.Errorf("failed to find default subnet: %w", err)
+	}
+
+	// Get subnet details to extract VPC ID
+	subnetResult, err := c.ec2.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+		SubnetIds: []string{subnetID},
+	})
+	if err != nil {
+		c.logger.WithError(err).Error("Failed to describe subnet for VPC ID")
+		return nil, fmt.Errorf("failed to describe subnet: %w", err)
+	}
+
+	if len(subnetResult.Subnets) == 0 {
+		return nil, fmt.Errorf("subnet %s not found", subnetID)
+	}
+
+	vpcID := aws.ToString(subnetResult.Subnets[0].VpcId)
+
+	c.logger.WithFields(logrus.Fields{
+		"subnetId": subnetID,
+		"vpcId":    vpcID,
+		"region":   c.cfg.Region,
+	}).Info("Successfully found default subnet and VPC via AWS API")
+
+	return &SubnetInfo{
+		SubnetID: subnetID,
+		VpcID:    vpcID,
+	}, nil
+}
+
+// GetSubnetsInVPC gets all available subnets in a specific VPC
+func (c *Client) GetSubnetsInVPC(ctx context.Context, vpcID string) ([]string, error) {
+	c.logger.WithFields(logrus.Fields{
+		"vpcId":  vpcID,
+		"region": c.cfg.Region,
+	}).Info("Starting DescribeSubnets API call for VPC")
+
+	input := &ec2.DescribeSubnetsInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("vpc-id"),
+				Values: []string{vpcID},
+			},
+			{
+				Name:   aws.String("state"),
+				Values: []string{"available"},
+			},
+		},
+	}
+
+	result, err := c.ec2.DescribeSubnets(ctx, input)
+	if err != nil {
+		c.logger.WithError(err).Error("DescribeSubnets API call failed")
+		return nil, fmt.Errorf("failed to describe subnets: %w", err)
+	}
+
+	c.logger.WithField("subnets_count", len(result.Subnets)).Info("DescribeSubnets API call successful")
+
+	if len(result.Subnets) == 0 {
+		c.logger.Warn("No subnets found in VPC")
+		return []string{}, nil
+	}
+
+	var subnetIDs []string
+	for _, subnet := range result.Subnets {
+		if subnet.SubnetId != nil {
+			subnetIDs = append(subnetIDs, *subnet.SubnetId)
+			c.logger.WithFields(logrus.Fields{
+				"subnetId": *subnet.SubnetId,
+				"az":       aws.ToString(subnet.AvailabilityZone),
+				"cidr":     aws.ToString(subnet.CidrBlock),
+			}).Debug("Found subnet in VPC")
+		}
+	}
+
+	c.logger.WithFields(logrus.Fields{
+		"subnet_ids": subnetIDs,
+		"vpcId":      vpcID,
+		"region":     c.cfg.Region,
+		"count":      len(subnetIDs),
+	}).Info("Successfully found subnets in VPC via AWS API")
+
+	return subnetIDs, nil
 }

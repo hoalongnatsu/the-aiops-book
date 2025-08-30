@@ -125,7 +125,7 @@ func (a *StateAwareAgent) ExecuteConfirmedPlanWithDryRun(ctx context.Context, de
 
 		// 🔥 CRITICAL: Save state after each successful step
 		// This ensures that if later steps fail, we don't lose track of successfully created resources
-		if err := a.persistCurrentState(ctx); err != nil {
+		if err := a.persistCurrentState(); err != nil {
 			a.Logger.WithError(err).Warn("Failed to persist state after successful step - continuing execution")
 			// Don't fail the execution for state persistence issues, just log warning
 		} else {
@@ -347,6 +347,8 @@ func (a *StateAwareAgent) executeExecutionStep(ctx context.Context, planStep *ty
 		result, err = a.executeDeleteAction(planStep, progressChan, execution.ID)
 	case "validate":
 		result, err = a.executeValidateAction(planStep, progressChan, execution.ID)
+	case "api_value_retrieval":
+		result, err = a.executeAPIValueRetrieval(ctx, planStep, progressChan, execution.ID)
 	default:
 		err = fmt.Errorf("unknown action type: %s", planStep.Action)
 	}
@@ -382,6 +384,254 @@ func (a *StateAwareAgent) executeCreateAction(ctx context.Context, planStep *typ
 
 	// Use native MCP tool call approach
 	return a.executeNativeMCPTool(ctx, planStep, progressChan, executionID)
+}
+
+// executeAPIValueRetrieval handles API calls to retrieve real values instead of AI-generated placeholders
+func (a *StateAwareAgent) executeAPIValueRetrieval(ctx context.Context, planStep *types.ExecutionPlanStep, progressChan chan<- *types.ExecutionUpdate, executionID string) (map[string]interface{}, error) {
+	// Send progress update
+	if progressChan != nil {
+		progressChan <- &types.ExecutionUpdate{
+			Type:        "step_progress",
+			ExecutionID: executionID,
+			StepID:      planStep.ID,
+			Message:     fmt.Sprintf("Retrieving real values from AWS API: %s", planStep.Name),
+			Timestamp:   time.Now(),
+		}
+	}
+
+	a.Logger.WithFields(map[string]interface{}{
+		"step_id":     planStep.ID,
+		"step_name":   planStep.Name,
+		"resource_id": planStep.ResourceID,
+		"parameters":  planStep.Parameters,
+	}).Info("Executing API value retrieval")
+
+	// Determine the type of value retrieval based on step parameters
+	valueType, exists := planStep.Parameters["value_type"]
+	if !exists {
+		return nil, fmt.Errorf("value_type parameter is required for API value retrieval")
+	}
+
+	var result map[string]interface{}
+	var err error
+
+	switch valueType {
+	case "latest_ami":
+		result, err = a.retrieveLatestAMI(ctx, planStep)
+	case "default_vpc":
+		result, err = a.retrieveDefaultVPC(ctx, planStep)
+	case "default_subnet":
+		result, err = a.retrieveDefaultSubnet(ctx, planStep)
+	case "available_azs":
+		result, err = a.retrieveAvailabilityZones(ctx, planStep)
+	default:
+		err = fmt.Errorf("unsupported value_type: %s", valueType)
+	}
+
+	if err != nil {
+		a.Logger.WithError(err).WithField("value_type", valueType).Error("API value retrieval failed")
+		return nil, fmt.Errorf("failed to retrieve %s: %w", valueType, err)
+	}
+
+	// Store the retrieved value in resource mappings for use in subsequent steps
+	if resourceValue, exists := result["value"]; exists {
+		if resourceValueStr, ok := resourceValue.(string); ok {
+			a.storeResourceMapping(planStep.ID, resourceValueStr)
+		}
+	}
+
+	// For subnet retrieval, also store the VPC ID for security group creation
+	if valueType == "default_subnet" {
+		if vpcID, exists := result["vpc_id"]; exists {
+			if vpcIDStr, ok := vpcID.(string); ok {
+				a.storeResourceMapping(planStep.ID+".vpcId", vpcIDStr)
+				a.Logger.WithFields(map[string]interface{}{
+					"step_id": planStep.ID,
+					"vpc_id":  vpcIDStr,
+				}).Debug("Stored VPC ID mapping for subnet step")
+			}
+		}
+	}
+
+	a.Logger.WithFields(map[string]interface{}{
+		"step_id":    planStep.ID,
+		"value_type": valueType,
+		"result":     result,
+	}).Info("API value retrieval completed successfully")
+
+	return result, nil
+}
+
+// retrieveLatestAMI gets the latest Amazon Linux 2 AMI for the current region
+func (a *StateAwareAgent) retrieveLatestAMI(ctx context.Context, planStep *types.ExecutionPlanStep) (map[string]interface{}, error) {
+	// Get the OS type from parameters (default to Amazon Linux 2)
+	osType := "amazon-linux-2"
+	if osParam, exists := planStep.Parameters["os_type"]; exists {
+		osType = fmt.Sprintf("%v", osParam)
+	}
+
+	// Get the architecture (default to x86_64)
+	architecture := "x86_64"
+	if archParam, exists := planStep.Parameters["architecture"]; exists {
+		architecture = fmt.Sprintf("%v", archParam)
+	}
+
+	a.Logger.WithFields(map[string]interface{}{
+		"os_type":      osType,
+		"architecture": architecture,
+		"step_id":      planStep.ID,
+	}).Info("Starting API retrieval for latest AMI")
+
+	var amiID string
+	var err error
+
+	switch osType {
+	case "amazon-linux-2":
+		a.Logger.Info("Calling AWS API via awsClient.GetLatestAmazonLinux2AMI")
+		amiID, err = a.awsClient.GetLatestAmazonLinux2AMI(ctx)
+		if err != nil {
+			a.Logger.WithError(err).Error("AWS API call failed for GetLatestAmazonLinux2AMI")
+		} else {
+			a.Logger.WithField("ami_id", amiID).Info("AWS API call successful, received AMI ID")
+		}
+	case "ubuntu":
+		a.Logger.Info("Calling AWS API via awsClient.GetLatestUbuntuAMI")
+		amiID, err = a.awsClient.GetLatestUbuntuAMI(ctx, architecture)
+		if err != nil {
+			a.Logger.WithError(err).Error("AWS API call failed for GetLatestUbuntuAMI")
+		} else {
+			a.Logger.WithField("ami_id", amiID).Info("AWS API call successful, received Ubuntu AMI ID")
+		}
+	case "windows":
+		a.Logger.Info("Calling AWS API via awsClient.GetLatestWindowsAMI")
+		amiID, err = a.awsClient.GetLatestWindowsAMI(ctx, architecture)
+		if err != nil {
+			a.Logger.WithError(err).Error("AWS API call failed for GetLatestWindowsAMI")
+		} else {
+			a.Logger.WithField("ami_id", amiID).Info("AWS API call successful, received Windows AMI ID")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported OS type: %s. Supported types: amazon-linux-2, ubuntu, windows", osType)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get latest %s AMI: %w", osType, err)
+	}
+
+	a.Logger.WithFields(map[string]interface{}{
+		"ami_id":       amiID,
+		"os_type":      osType,
+		"architecture": architecture,
+		"source":       "aws_api_call",
+	}).Info("API retrieval completed successfully")
+
+	return map[string]interface{}{
+		"value":        amiID,
+		"type":         "ami",
+		"os_type":      osType,
+		"architecture": architecture,
+		"retrieved_at": time.Now().Format(time.RFC3339),
+		"description":  fmt.Sprintf("Latest %s AMI for %s architecture", osType, architecture),
+		"source":       "aws_api_call", // Confirm this came from API
+	}, nil
+}
+
+// retrieveDefaultVPC gets the default VPC for the current region
+func (a *StateAwareAgent) retrieveDefaultVPC(ctx context.Context, planStep *types.ExecutionPlanStep) (map[string]interface{}, error) {
+	a.Logger.WithField("step_id", planStep.ID).Info("Starting API retrieval for default VPC")
+
+	a.Logger.Info("Calling AWS API via awsClient.GetDefaultVPC")
+	vpcID, err := a.awsClient.GetDefaultVPC(ctx)
+	if err != nil {
+		a.Logger.WithError(err).Error("AWS API call failed for GetDefaultVPC")
+		return nil, fmt.Errorf("failed to get default VPC: %w", err)
+	}
+
+	a.Logger.WithField("vpc_id", vpcID).Info("AWS API call successful, received VPC ID")
+
+	return map[string]interface{}{
+		"value":        vpcID,
+		"type":         "vpc",
+		"is_default":   true,
+		"retrieved_at": time.Now().Format(time.RFC3339),
+		"description":  "Default VPC for the current region",
+		"source":       "aws_api_call",
+	}, nil
+}
+
+// retrieveDefaultSubnet gets the default subnet for the current region
+func (a *StateAwareAgent) retrieveDefaultSubnet(ctx context.Context, planStep *types.ExecutionPlanStep) (map[string]interface{}, error) {
+	a.Logger.WithField("step_id", planStep.ID).Info("Starting API retrieval for default subnet")
+
+	a.Logger.Info("Calling AWS API via awsClient.GetDefaultSubnet")
+	subnetInfo, err := a.awsClient.GetDefaultSubnet(ctx)
+	if err != nil {
+		a.Logger.WithError(err).Error("AWS API call failed for GetDefaultSubnet")
+		return nil, fmt.Errorf("failed to get default subnet: %w", err)
+	}
+
+	a.Logger.WithFields(map[string]interface{}{
+		"subnet_id": subnetInfo.SubnetID,
+		"vpc_id":    subnetInfo.VpcID,
+	}).Info("AWS API call successful, received subnet and VPC IDs")
+
+	return map[string]interface{}{
+		"value":        subnetInfo.SubnetID, // For {{step-id.resourceId}} resolution (subnet ID)
+		"subnet_id":    subnetInfo.SubnetID, // Explicit subnet ID
+		"vpc_id":       subnetInfo.VpcID,    // Explicit VPC ID for security groups
+		"type":         "subnet",
+		"is_default":   true,
+		"retrieved_at": time.Now().Format(time.RFC3339),
+		"description":  fmt.Sprintf("Default subnet (%s) in VPC (%s)", subnetInfo.SubnetID, subnetInfo.VpcID),
+		"source":       "aws_api_call",
+	}, nil
+}
+
+// retrieveAvailabilityZones gets available AZs for the current region
+func (a *StateAwareAgent) retrieveAvailabilityZones(ctx context.Context, planStep *types.ExecutionPlanStep) (map[string]interface{}, error) {
+	a.Logger.WithField("step_id", planStep.ID).Info("Starting API retrieval for availability zones")
+
+	// Check if user wants a specific number of AZs
+	maxAZs := 0
+	if maxParam, exists := planStep.Parameters["max_azs"]; exists {
+		if maxFloat, ok := maxParam.(float64); ok {
+			maxAZs = int(maxFloat)
+		}
+	}
+
+	a.Logger.Info("Calling AWS API via awsClient.GetAvailabilityZones")
+	azList, err := a.awsClient.GetAvailabilityZones(ctx)
+	if err != nil {
+		a.Logger.WithError(err).Error("AWS API call failed for GetAvailabilityZones")
+		return nil, fmt.Errorf("failed to get availability zones: %w", err)
+	}
+
+	// Limit AZs if requested
+	if maxAZs > 0 && len(azList) > maxAZs {
+		azList = azList[:maxAZs]
+		a.Logger.WithField("limited_to", maxAZs).Info("Limited AZ list to requested maximum")
+	}
+
+	a.Logger.WithFields(map[string]interface{}{
+		"availability_zones": azList,
+		"count":              len(azList),
+	}).Info("AWS API call successful, received availability zones")
+
+	// Store the first AZ as the resource value for dependency resolution
+	primaryAZ := ""
+	if len(azList) > 0 {
+		primaryAZ = azList[0]
+	}
+
+	return map[string]interface{}{
+		"value":        primaryAZ, // For {{step-id.resourceId}} resolution
+		"all_zones":    azList,    // Full list available in result
+		"count":        len(azList),
+		"type":         "availability_zones",
+		"retrieved_at": time.Now().Format(time.RFC3339),
+		"description":  fmt.Sprintf("Available AZs in current region (primary: %s)", primaryAZ),
+		"source":       "aws_api_call",
+	}, nil
 }
 
 // executeNativeMCPTool executes MCP tools directly with AI-provided parameters
@@ -474,7 +724,7 @@ func (a *StateAwareAgent) executeNativeMCPTool(ctx context.Context, planStep *ty
 	a.storeResourceMapping(planStep.ID, resourceID)
 
 	// Update state manager with the new resource
-	if err := a.updateStateFromMCPResult(ctx, planStep, result); err != nil {
+	if err := a.updateStateFromMCPResult(planStep, result); err != nil {
 		a.Logger.WithError(err).Warn("Failed to update state after resource creation")
 	}
 
@@ -643,7 +893,7 @@ func (a *StateAwareAgent) executeValidateAction(planStep *types.ExecutionPlanSte
 }
 
 // updateStateFromMCPResult updates the state manager with results from MCP operations
-func (a *StateAwareAgent) updateStateFromMCPResult(ctx context.Context, planStep *types.ExecutionPlanStep, result map[string]interface{}) error {
+func (a *StateAwareAgent) updateStateFromMCPResult(planStep *types.ExecutionPlanStep, result map[string]interface{}) error {
 	// Create a simple properties map from MCP result
 	resultData := map[string]interface{}{
 		"mcp_response": result,
@@ -736,11 +986,16 @@ func (a *StateAwareAgent) resolveDependencyReference(reference string) (string, 
 
 	refContent := strings.TrimSuffix(strings.TrimPrefix(reference, "{{"), "}}")
 	parts := strings.Split(refContent, ".")
-	if len(parts) != 2 || parts[1] != "resourceId" {
-		return "", fmt.Errorf("invalid reference format: %s", reference)
-	}
 
-	stepID := parts[0]
+	// Support both {{step-1.resourceId}} and {{step-1}} formats
+	var stepID string
+	if len(parts) == 2 && parts[1] == "resourceId" {
+		stepID = parts[0]
+	} else if len(parts) == 1 {
+		stepID = parts[0]
+	} else {
+		return "", fmt.Errorf("invalid reference format: %s (expected {{step-id.resourceId}} or {{step-id}})", reference)
+	}
 
 	a.mappingsMutex.RLock()
 	resourceID, exists := a.resourceMappings[stepID]
@@ -749,6 +1004,12 @@ func (a *StateAwareAgent) resolveDependencyReference(reference string) (string, 
 	if !exists {
 		return "", fmt.Errorf("resource ID not found for step: %s", stepID)
 	}
+
+	a.Logger.WithFields(map[string]interface{}{
+		"reference":   reference,
+		"step_id":     stepID,
+		"resource_id": resourceID,
+	}).Debug("Resolved dependency reference")
 
 	return resourceID, nil
 }
@@ -794,7 +1055,34 @@ func (a *StateAwareAgent) getDefaultValue(toolName, paramName string, params map
 			}
 			return "t3.micro"
 		case "imageId":
-			return a.getDefaultAMIForRegion()
+			// First, try to find AMI from a previous API retrieval step
+			if amiStepRef, exists := params["ami_step_ref"]; exists {
+				stepRef := fmt.Sprintf("%v", amiStepRef)
+				if amiID, err := a.resolveDependencyReference(stepRef); err == nil {
+					a.Logger.WithFields(map[string]interface{}{
+						"ami_id":   amiID,
+						"step_ref": stepRef,
+						"source":   "api_retrieval_step",
+					}).Info("Using AMI ID from API retrieval step")
+					return amiID
+				} else {
+					a.Logger.WithError(err).WithField("step_ref", stepRef).Warn("Failed to resolve AMI step reference, falling back to direct API call")
+				}
+			}
+
+			// Fallback to direct API call (legacy approach)
+			amiID := a.getDefaultAMIForRegion()
+			if amiID != "" {
+				a.Logger.WithFields(map[string]interface{}{
+					"ami_id": amiID,
+					"source": "direct_api_call",
+				}).Info("Using AMI ID from direct API call")
+				return amiID
+			}
+
+			// If all else fails, return empty string to trigger an error
+			a.Logger.Warn("No AMI ID available from API retrieval step or direct call")
+			return ""
 		case "keyName":
 			// Try to use key name from params if available
 			if keyName, exists := params["ssh_key"]; exists {
@@ -1020,19 +1308,194 @@ func (a *StateAwareAgent) GetAvailableToolsContext() string {
 	context.WriteString("  \"id\": \"step-1\",\n")
 	context.WriteString("  \"name\": \"Descriptive step name\",\n")
 	context.WriteString("  \"description\": \"What this step accomplishes\",\n")
-	context.WriteString("  \"action\": \"create|update|delete|validate\",\n")
+	context.WriteString("  \"action\": \"create|update|delete|validate|api_value_retrieval\",\n")
 	context.WriteString("  \"resourceId\": \"unique-resource-identifier\",\n")
 	context.WriteString("  \"mcpTool\": \"exact-tool-name-from-above\",\n")
 	context.WriteString("  \"toolParameters\": {\n")
 	context.WriteString("    \"use\": \"exact parameter names from tool schema\",\n")
-	context.WriteString("    \"imageId\": \"ami-12345\",\n")
+	context.WriteString("    \"imageId\": \"{{step-ami.resourceId}}\",\n")
 	context.WriteString("    \"instanceType\": \"t3.micro\",\n")
 	context.WriteString("    \"name\": \"my-instance\"\n")
+	context.WriteString("  },\n")
+	context.WriteString("  \"parameters\": {\n")
+	context.WriteString("    \"value_type\": \"latest_ami\",\n")
+	context.WriteString("    \"os_type\": \"amazon-linux-2\",\n")
+	context.WriteString("    \"architecture\": \"x86_64\"\n")
 	context.WriteString("  },\n")
 	context.WriteString("  \"dependsOn\": [\"previous-step-id\"],\n")
 	context.WriteString("  \"estimatedDuration\": \"30s\",\n")
 	context.WriteString("  \"status\": \"pending\"\n")
 	context.WriteString("}\n\n")
+
+	context.WriteString("=== API VALUE RETRIEVAL STEPS ===\n\n")
+	context.WriteString("For resources that need real AWS values instead of AI-generated placeholders, add API retrieval steps:\n\n")
+	context.WriteString("STEP 1 - API Value Retrieval:\n")
+	context.WriteString("{\n")
+	context.WriteString("  \"id\": \"step-ami\",\n")
+	context.WriteString("  \"name\": \"Get Latest Amazon Linux 2 AMI\",\n")
+	context.WriteString("  \"description\": \"Call AWS API to get real AMI ID because user didn't provide one\",\n")
+	context.WriteString("  \"action\": \"api_value_retrieval\",\n")
+	context.WriteString("  \"resourceId\": \"latest-ami\",\n")
+	context.WriteString("  \"parameters\": {\n")
+	context.WriteString("    \"value_type\": \"latest_ami\",\n")
+	context.WriteString("    \"os_type\": \"amazon-linux-2\",\n")
+	context.WriteString("    \"architecture\": \"x86_64\"\n")
+	context.WriteString("  },\n")
+	context.WriteString("  \"dependsOn\": [],\n")
+	context.WriteString("  \"estimatedDuration\": \"10s\"\n")
+	context.WriteString("}\n\n")
+	context.WriteString("STEP 2 - Use Retrieved Value:\n")
+	context.WriteString("{\n")
+	context.WriteString("  \"id\": \"step-create-instance\",\n")
+	context.WriteString("  \"name\": \"Create EC2 Instance\",\n")
+	context.WriteString("  \"action\": \"create\",\n")
+	context.WriteString("  \"mcpTool\": \"create-ec2-instance\",\n")
+	context.WriteString("  \"toolParameters\": {\n")
+	context.WriteString("    \"imageId\": \"{{step-ami.resourceId}}\",\n")
+	context.WriteString("    \"instanceType\": \"t3.micro\",\n")
+	context.WriteString("    \"name\": \"my-instance\"\n")
+	context.WriteString("  },\n")
+	context.WriteString("  \"dependsOn\": [\"step-ami\"]\n")
+	context.WriteString("}\n\n")
+	context.WriteString("Available value_type options:\n")
+	context.WriteString("- \"latest_ami\": Get latest AMI for specified OS\n")
+	context.WriteString("  * os_type: amazon-linux-2, ubuntu, windows\n")
+	context.WriteString("  * architecture: x86_64, arm64 (default: x86_64)\n")
+	context.WriteString("- \"default_vpc\": Get default VPC for the region\n")
+	context.WriteString("- \"default_subnet\": Get default subnet in the region\n")
+	context.WriteString("- \"available_azs\": Get available availability zones\n")
+	context.WriteString("  * max_azs: limit number of AZs returned (optional)\n\n")
+
+	context.WriteString("=== EXTENDED API VALUE RETRIEVAL EXAMPLES ===\n\n")
+
+	context.WriteString("Example 1 - Ubuntu AMI:\n")
+	context.WriteString("{\n")
+	context.WriteString("  \"id\": \"step-ubuntu-ami\",\n")
+	context.WriteString("  \"action\": \"api_value_retrieval\",\n")
+	context.WriteString("  \"parameters\": {\n")
+	context.WriteString("    \"value_type\": \"latest_ami\",\n")
+	context.WriteString("    \"os_type\": \"ubuntu\",\n")
+	context.WriteString("    \"architecture\": \"x86_64\"\n")
+	context.WriteString("  }\n")
+	context.WriteString("}\n\n")
+
+	context.WriteString("Example 2 - Default VPC:\n")
+	context.WriteString("{\n")
+	context.WriteString("  \"id\": \"step-vpc\",\n")
+	context.WriteString("  \"action\": \"api_value_retrieval\",\n")
+	context.WriteString("  \"parameters\": {\n")
+	context.WriteString("    \"value_type\": \"default_vpc\"\n")
+	context.WriteString("  }\n")
+	context.WriteString("}\n\n")
+
+	context.WriteString("Example 3 - Default Subnet:\n")
+	context.WriteString("{\n")
+	context.WriteString("  \"id\": \"step-subnet\",\n")
+	context.WriteString("  \"action\": \"api_value_retrieval\",\n")
+	context.WriteString("  \"parameters\": {\n")
+	context.WriteString("    \"value_type\": \"default_subnet\"\n")
+	context.WriteString("  }\n")
+	context.WriteString("}\n\n")
+
+	context.WriteString("Example 4 - Availability Zones (limit to 2):\n")
+	context.WriteString("{\n")
+	context.WriteString("  \"id\": \"step-azs\",\n")
+	context.WriteString("  \"action\": \"api_value_retrieval\",\n")
+	context.WriteString("  \"parameters\": {\n")
+	context.WriteString("    \"value_type\": \"available_azs\",\n")
+	context.WriteString("    \"max_azs\": 2\n")
+	context.WriteString("  }\n")
+	context.WriteString("}\n\n")
+
+	context.WriteString("Example 5 - CORRECT EC2 Instance Pattern:\n")
+	context.WriteString("{\n")
+	context.WriteString("  \"id\": \"step-get-subnet\",\n")
+	context.WriteString("  \"name\": \"Get Default Subnet\",\n")
+	context.WriteString("  \"action\": \"api_value_retrieval\",\n")
+	context.WriteString("  \"parameters\": { \"value_type\": \"default_subnet\" }\n")
+	context.WriteString("},\n")
+	context.WriteString("{\n")
+	context.WriteString("  \"id\": \"step-create-instance\",\n")
+	context.WriteString("  \"name\": \"Create EC2 Instance\",\n")
+	context.WriteString("  \"action\": \"create\",\n")
+	context.WriteString("  \"mcpTool\": \"create-ec2-instance\",\n")
+	context.WriteString("  \"toolParameters\": {\n")
+	context.WriteString("    \"subnetId\": \"{{step-get-subnet.resourceId}}\",\n")
+	context.WriteString("    \"imageId\": \"ami-12345\",\n")
+	context.WriteString("    \"instanceType\": \"t3.micro\"\n")
+	context.WriteString("  },\n")
+	context.WriteString("  \"dependsOn\": [\"step-get-subnet\"]\n")
+	context.WriteString("}\n")
+	context.WriteString("⚠️  NOTE: subnetId uses step-get-subnet (default_subnet), NOT step-get-vpc!\n\n")
+
+	context.WriteString("=== CRITICAL NETWORKING RULES ===\n\n")
+	context.WriteString("⚠️  IMPORTANT: EC2 instances require SUBNET IDs, NOT VPC IDs\n")
+	context.WriteString("✅ CORRECT: \"subnetId\": \"{{step-subnet.resourceId}}\" (where step-subnet uses default_subnet)\n")
+	context.WriteString("❌ WRONG:   \"subnetId\": \"{{step-vpc.resourceId}}\" (VPC ID cannot be used as subnet ID)\n\n")
+
+	context.WriteString("⚠️  IMPORTANT: Security groups require VPC IDs\n")
+	context.WriteString("✅ CORRECT: \"vpcId\": \"{{step-vpc.resourceId}}\" (use separate default_vpc step)\n")
+	context.WriteString("❌ WRONG:   \"vpcId\": \"{{step-subnet.resourceId}}\" (subnet ID cannot be used as VPC ID)\n\n")
+
+	context.WriteString("📝 Resource ID Access Pattern:\n")
+	context.WriteString("- {{step-name.resourceId}} → returns the primary resource ID\n")
+	context.WriteString("- default_vpc step → returns VPC ID\n")
+	context.WriteString("- default_subnet step → returns subnet ID\n\n")
+
+	context.WriteString("=== COMMON PATTERNS ===\n\n")
+	context.WriteString("Pattern 1 - Complete Infrastructure Setup:\n")
+	context.WriteString("1. Retrieve default subnet → step-subnet (this gets both VPC discovery and subnet selection)\n")
+	context.WriteString("2. Retrieve AMI → step-ami\n")
+	context.WriteString("3. Create instance using {{step-ami.resourceId}}, {{step-subnet.resourceId}}\n")
+	context.WriteString("   NOTE: Use step-subnet.resourceId for subnetId parameter!\n")
+	context.WriteString("   NOTE: keyName is optional - omit if no key pair needed\n\n")
+
+	context.WriteString("Pattern 2 - Security Group + EC2 Creation:\n")
+	context.WriteString("1. Retrieve default VPC → step-vpc (for security group)\n")
+	context.WriteString("2. Retrieve default subnet → step-subnet (for EC2 instance)\n")
+	context.WriteString("3. Create security group → step-sg using {{step-vpc.resourceId}}\n")
+	context.WriteString("4. Create EC2 instance using {{step-subnet.resourceId}} and security group\n")
+	context.WriteString("Example:\n")
+	context.WriteString("{\n")
+	context.WriteString("  \"id\": \"step-vpc\",\n")
+	context.WriteString("  \"action\": \"api_value_retrieval\",\n")
+	context.WriteString("  \"parameters\": { \"value_type\": \"default_vpc\" }\n")
+	context.WriteString("},\n")
+	context.WriteString("{\n")
+	context.WriteString("  \"id\": \"step-subnet\",\n")
+	context.WriteString("  \"action\": \"api_value_retrieval\",\n")
+	context.WriteString("  \"parameters\": { \"value_type\": \"default_subnet\" }\n")
+	context.WriteString("},\n")
+	context.WriteString("{\n")
+	context.WriteString("  \"id\": \"step-sg\",\n")
+	context.WriteString("  \"action\": \"create\",\n")
+	context.WriteString("  \"mcpTool\": \"create-security-group\",\n")
+	context.WriteString("  \"toolParameters\": {\n")
+	context.WriteString("    \"name\": \"web-sg\",\n")
+	context.WriteString("    \"description\": \"Web server security group\",\n")
+	context.WriteString("    \"vpcId\": \"{{step-vpc.resourceId}}\"\n")
+	context.WriteString("  }\n")
+	context.WriteString("}\n\n")
+
+	context.WriteString("Pattern 3 - VPC and Subnet Discovery:\n")
+	context.WriteString("1. Retrieve default VPC → step-vpc (only if you need VPC ID for other resources)\n")
+	context.WriteString("2. Retrieve default subnet → step-subnet (for EC2 instances)\n")
+	context.WriteString("3. Create resources using appropriate IDs\n")
+	context.WriteString("   - VPC resources: {{step-vpc.resourceId}}\n")
+	context.WriteString("   - EC2 instances: {{step-subnet.resourceId}} for subnetId\n\n")
+
+	context.WriteString("Pattern 4 - Custom Network Setup:\n")
+	context.WriteString("1. Retrieve default VPC → step-vpc\n")
+	context.WriteString("2. Retrieve AZs → step-azs  \n")
+	context.WriteString("3. Create custom subnet using {{step-vpc.resourceId}} and {{step-azs.resourceId}}\n")
+	context.WriteString("4. Retrieve AMI\n")
+	context.WriteString("5. Create instance with custom subnet\n\n")
+
+	context.WriteString("Pattern 4 - Multi-OS Deployment:\n")
+	context.WriteString("1. Get Linux AMI → step-linux-ami (os_type: ubuntu)\n")
+	context.WriteString("2. Get Windows AMI → step-windows-ami (os_type: windows)\n")
+	context.WriteString("3. Create Linux instances → {{step-linux-ami.resourceId}}\n")
+	context.WriteString("4. Create Windows instances → {{step-windows-ami.resourceId}}\n\n")
 
 	context.WriteString("=== CRITICAL INSTRUCTIONS ===\n")
 	context.WriteString("1. Use EXACT tool names and parameter names from the schemas above\n")
@@ -1040,7 +1503,9 @@ func (a *StateAwareAgent) GetAvailableToolsContext() string {
 	context.WriteString("3. Put tool parameters in 'toolParameters' field with exact schema format\n")
 	context.WriteString("4. The agent will call MCP tools directly with your parameters\n")
 	context.WriteString("5. Only required parameters need values - optional ones can be omitted\n")
-	context.WriteString("6. Use dependency references like {{step-1.resourceId}} for resource IDs from previous steps\n\n")
+	context.WriteString("6. Use dependency references like {{step-1.resourceId}} for resource IDs from previous steps\n")
+	context.WriteString("7. IMPORTANT: For AMI IDs, VPC IDs, subnet IDs, etc., add api_value_retrieval steps BEFORE create steps\n")
+	context.WriteString("8. This prevents \"Invalid AMI ID\", \"VPCIdNotSpecified\", and subnet errors by using real AWS values\n\n")
 
 	context.WriteString("=== DEPENDENCY MANAGEMENT ===\n")
 	context.WriteString("AWS resource creation order:\n")
@@ -1055,7 +1520,7 @@ func (a *StateAwareAgent) GetAvailableToolsContext() string {
 
 // persistCurrentState saves the current infrastructure state to persistent storage
 // This ensures that successfully completed steps are not lost if later steps fail
-func (a *StateAwareAgent) persistCurrentState(ctx context.Context) error {
+func (a *StateAwareAgent) persistCurrentState() error {
 	a.Logger.Debug("Persisting current infrastructure state")
 
 	// Use MCP server to save the current state

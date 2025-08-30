@@ -26,6 +26,7 @@ type Client struct {
 func NewClient(region, profile string, logger *logging.Logger) (*Client, error) {
 	cfg, err := config.LoadDefaultConfig(
 		context.Background(),
+		config.WithRegion(region),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)

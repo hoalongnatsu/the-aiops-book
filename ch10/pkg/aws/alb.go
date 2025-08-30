@@ -269,7 +269,7 @@ func (c *Client) GetLoadBalancer(ctx context.Context, loadBalancerArn string) (*
 	}
 
 	if len(result.LoadBalancers) == 0 {
-		return nil, fmt.Errorf("Load Balancer %s not found", loadBalancerArn)
+		return nil, fmt.Errorf("LoadBalancer %s not found", loadBalancerArn)
 	}
 
 	return c.convertLoadBalancer(result.LoadBalancers[0]), nil
@@ -300,7 +300,7 @@ func (c *Client) GetTargetGroup(ctx context.Context, targetGroupArn string) (*ty
 	}
 
 	if len(result.TargetGroups) == 0 {
-		return nil, fmt.Errorf("Target Group %s not found", targetGroupArn)
+		return nil, fmt.Errorf("TargetGroup %s not found", targetGroupArn)
 	}
 
 	return c.convertTargetGroup(result.TargetGroups[0]), nil

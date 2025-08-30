@@ -19,6 +19,12 @@ type CreateVPCParams struct {
 	Tags               map[string]string
 }
 
+// Subnet Information
+type SubnetInfo struct {
+	SubnetID string
+	VpcID    string
+}
+
 type CreateSubnetParams struct {
 	VpcID               string
 	CidrBlock           string
