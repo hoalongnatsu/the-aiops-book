@@ -4,110 +4,130 @@ Master AI-powered infrastructure automation with this hands-on guide to building
 
 ## Book Structure & Content
 
+### Preface
+- Who This Book Is For
+- What You'll Build
+- How This Book Is Organized
+- A Note on the Rapidly Evolving Landscape
+- Acknowledgments to the Community
+
 ### Part I: Foundation
-**Building the Knowledge Base**
 
 #### Chapter 1: The AIOps Revolution
-- Why traditional DevOps automation isn't enough
-- Introduction to AI-powered operations
-- Overview of MCP and AI Agents ecosystem
-- Case studies of successful AIOps implementations
+- The Limits of Traditional Automation
+- What AIOps Really Means
+- The Infrastructure Context Problem
+- Enter MCP and AI Agents
+- Real-World Impact and Case Studies
+- Why This Matters Now
+- What You'll Learn in This Book
 
-#### Chapter 2: AI Fundamentals for DevOps Engineers  
-- LLMs, prompt engineering, and context management
-- Understanding model capabilities and limitations
-- AI tools integration strategies
-- Security and governance considerations
+#### Chapter 2: AI Fundamentals for DevOps Engineers
+- Understanding Large Language Models for Infrastructure Work
+- The Context Window and Memory Limitations
+- Prompt Engineering for Infrastructure Automation
+- AI Capabilities and Limitations in Operations
+- Security Considerations for AI-Powered Infrastructure
+- Integration Patterns with Existing Tools
+- Choosing the Right AI Models and Providers
+- Building Reliable AI Systems
+- What's Next
 
 #### Chapter 3: Model Context Protocol Deep Dive
-- MCP architecture and core concepts
-- Protocol specifications and communication patterns
-- Comparison with REST APIs and GraphQL
-- Real-world MCP use cases in DevOps
+- What MCP Is and Why It Matters
+- MCP Architecture and Core Concepts
+- Protocol Specifications and Communication Patterns
+- MCP vs REST APIs and GraphQL
+- Real-World MCP Use Cases in DevOps
+- The MCP Ecosystem and Tooling
+- Security and Trust in MCP Implementation
+- Protocol Evolution and Future Directions
+- What's Next
 
 #### Chapter 4: Setting Up Your Development Environment
-- Go development environment for MCP
-- AWS CLI and SDK configuration
-- AI tools integration (GitHub Copilot)
-- Testing and debugging strategies
+- Go Development Environment for MCP
+- AWS CLI and SDK Configuration
+- AI Tools Integration
+- What's Next
 
 ### Part II: Building MCP Servers
-**From Concepts to Code**
 
 #### Chapter 5: Your First MCP Server in Go
-- Project structure and dependencies
-- Basic MCP protocol implementation
-- AWS SDK integration
-- Resource discovery and formatting
+- Project Structure and Dependencies
+- Basic MCP Protocol Implementation
+- AWS SDK Integration
+- Resource Discovery and Formatting
+- Testing Your MCP Server
+- What's Next
 
 #### Chapter 6: MCP Tools for Infrastructure Actions
-- Introduction to MCP Tools vs Resources
-- Building EC2 management tools (create, start, stop, terminate)
-- Tool parameter validation and error handling
-- Authentication and permission management
-- Real-world example: AI-powered EC2 provisioning workflow
-- Complete JSON-RPC interaction flow: User question → AI analysis → MCP Client → Server execution
+- Understanding MCP Tools vs Resources
+- Project Structure for Tools
+- Implementing MCP Tools
+- Extending the AWS Client
+- Tool Registration in MCP Server
+- Real-World Example: Complete AI-to-Infrastructure Flow
+- Chapter Summary
 
 #### Chapter 7: Advanced AWS Operations
-- EC2 instance management and automation
-- Auto Scaling Groups
-- AWS Load Balancers
-- VPC and networking automation
-- AWS Relational Database Service
+- The Production Infrastructure
+- AWS Infrastructure Fundamentals
+- Enhanced MCP Server Architecture
+- Extended Project Structure
+- Core Parameter Structures
+- VPC and Networking Tools Implementation
+- Auto Scaling Group Tools Implementation
+- Application Load Balancer Tools Implementation
+- RDS Tools Implementation
+- Tool Registration and MCP Integration
+- Real-World Example: Complete Production Deployment
+- Chapter Summary
+- What's Next
 
-#### Chapter 8: Using Your MCP Server with AI Assistants
-- Connecting MCP servers to GitHub Copilot
-- Debugging and troubleshooting MCP connections
-- Real-world example of a three-tier web application
+#### Chapter 8: Refactoring for Production-Ready Architecture
+- Understanding the Current Architecture's Limitations
+- Refactoring Goals and Vision
+- Key Refactoring Steps
+- Challenges and Solutions
+- Preparation for Chapter 9
+- Conclusion
+
+#### Chapter 9: GitHub Copilot and MCP Integration for Infrastructure Automation
+- GitHub Copilot and MCP
+- VS Code MCP Configuration Deep Dive
+- Real-World Scenario: Three-Tier Application with GitHub Copilot
+- Understanding Copilot's AI Decision Process
+- Advanced Copilot Integration Patterns
+- Debugging and Troubleshooting MCP with GitHub Copilot
+- Chapter Summary
 
 ### Part III: AI Agents for DevOps
-**Intelligent Automation with State Management**
 
-#### Chapter 9: Production-Ready AI Agents Architecture
-- Moving beyond simple MCP integrations
-- AI Agent frameworks: LangChain, LangGraph, and AutoGen
-- State management patterns for infrastructure automation
-- Agent reasoning, planning, and error recovery
-- Enterprise governance and approval workflows
+#### Chapter 10: AI Agents Architecture
+- From Stateless Tools to Stateful Agents
+- AI Agent Foundation
+- Agent Architecture Patterns
+- Agent Components Deep Dive
+- Enterprise Agent Considerations
+- What You've Learned
+- What's Next
 
-#### Chapter 10: State-Aware Infrastructure AI Agents
-- Terraform-like state management for AI agents
-- JSON state files: tracking deployed resources and status
-- Pre-deployment discovery and infrastructure scanning
-- Incremental updates and change detection
-- Resource dependency graph management
-- Conflict resolution and resource naming strategies
+#### Chapter 11: Understand What You Will Build
+- The Evolution from Automation to Intelligence
+- Core Principles of AI Infrastructure Agents
+- AI Agent Architecture Overview
+- The Agent Execution Flow
+- What You Will Build
+- The Strategic Advantage
+- What's Next
 
-#### Chapter 11: Advanced Error Handling and Recovery
-- Circuit breakers and retry logic for AI agents
-- Graceful degradation patterns
-- Rollback capabilities and deployment history
-- Network interruption and AI model failure recovery
-- Audit trails and compliance logging
-- Multi-region failover strategies
-
-#### Chapter 12: AI Agent Orchestration Patterns
-- Multi-agent systems for complex deployments
-- Agent coordination and communication protocols
-- Workflow engines and pipeline automation
-- Event-driven architecture for infrastructure changes
-- Real-time monitoring and agent health checks
-- Performance optimization and caching strategies
-
-#### Chapter 13: Enterprise AI Agent Security
-- Secrets management and encrypted communication
-- Role-based access control (RBAC) for AI agents
-- Multi-tenant support and isolation
-- Compliance frameworks (SOC 2, FedRAMP, GDPR)
-- Security hardening and threat mitigation
-- Audit and governance for AI-driven changes
-
-## Part V: What's Next
-
-#### Chapter 14: Future of AIOps
-- Emerging technologies and trends
-- The evolution of AI models and capabilities
-- New integration patterns and protocols
-- Research directions and opportunities
-- Building AIOps communities
-- Contributing to open source
+#### Chapter 12: Introduction to LangChain Framework
+- What is LangChain?
+- Why LangChain for Infrastructure Agents?
+- LangChain Core Concepts
+- Mapping LangChain to Your Agent Architecture
+- Agent Patterns in LangChain
+- LangChain in Go vs Python
+- Why This Matters for Infrastructure Automation
+- What You've Learned
+- What's Next
